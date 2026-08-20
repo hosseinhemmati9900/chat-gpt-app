@@ -58,5 +58,21 @@
             android:layout_height="wrap_content"
             android:layout_marginTop="16dp"
             android:text="Send Archive" />
+
+        <Button
+            android:id="@+id/exportAllArchivesButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="Export All Archives" />
+
+        <ProgressBar
+            android:id="@+id/exportProgress"
+            style="?android:attr/progressBarStyleHorizontal"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:max="100"
+            android:visibility="gone" />
     </LinearLayout>
 </ScrollView>
