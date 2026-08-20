@@ -2,7 +2,7 @@
 <resources>
     <style name="Theme.MediaDiagnostic" parent="android:style/Theme.Material.Light.NoActionBar">
         <item name="android:fontFamily">sans</item>
-        <item name="android:colorAccent">#3F51B5</item>
+        <item name="android:windowActionModeOverlay">true</item>
         <item name="android:navigationBarColor">#FFFFFF</item>
         <item name="android:statusBarColor">#FFFFFF</item>
         <item name="android:windowLightStatusBar">true</item>
