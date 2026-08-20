@@ -2,7 +2,9 @@ package com.example.chatgptapp
 
 import android.Manifest
 import android.app.Activity
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.MediaStore
@@ -10,9 +12,11 @@ import android.view.ViewGroup
 import android.widget.Button
 import android.widget.CheckBox
 import android.widget.LinearLayout
+import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
 import android.widget.ToggleButton
+import androidx.documentfile.provider.DocumentFile
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -24,7 +28,10 @@ class MainActivity : Activity() {
     private lateinit var groupArchivesButton: Button
     private lateinit var archiveListContainer: LinearLayout
     private lateinit var sendArchiveButton: Button
+    private lateinit var exportAllButton: Button
+    private lateinit var exportProgress: ProgressBar
     private val permissionRequestCode = 1001
+    private val exportFolderRequestCode = 2001
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -35,10 +42,14 @@ class MainActivity : Activity() {
         groupArchivesButton = findViewById(R.id.groupArchivesButton)
         archiveListContainer = findViewById(R.id.archiveListContainer)
         sendArchiveButton = findViewById(R.id.sendArchiveButton)
+        exportAllButton = findViewById(R.id.exportAllArchivesButton)
+        exportProgress = findViewById(R.id.exportProgress)
+
         generateButton.setOnClickListener { generateReport() }
         syncToggle.setOnCheckedChangeListener { _, checked -> if (checked) prepareSyncArchive() else statusText.text = "Sync preparation disabled." }
         groupArchivesButton.setOnClickListener { groupArchivesLocally() }
         sendArchiveButton.setOnClickListener { sendPreparedArchive() }
+        exportAllButton.setOnClickListener { previewAndChooseExportFolder() }
     }
 
     private fun generateReport() {
@@ -128,6 +139,89 @@ class MainActivity : Activity() {
                 val message = if (allSuccess) "Upload successful" else "Upload failed. Check logs."
                 statusText.text = message
                 Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
+            }
+        }.start()
+    }
+
+    private fun previewAndChooseExportFolder() {
+        val archives = File(cacheDir, "media-archives").listFiles()
+            ?.filter { it.isFile && it.extension.equals("zip", true) }
+            ?.sortedBy { it.name }
+            ?: emptyList()
+        if (archives.isEmpty()) {
+            Toast.makeText(this, "No archives available to export", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        val preview = TextView(this).apply {
+            text = buildString {
+                append("${archives.size} archives will be copied:\n\n")
+                archives.forEach { append("${it.name} — ${formatBytes(it.length())}\n") }
+                append("\nOriginal cache files will remain unchanged.")
+            }
+            setPadding(48, 32, 48, 16)
+        }
+        android.app.AlertDialog.Builder(this)
+            .setTitle("Export All Archives")
+            .setView(preview)
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Choose Folder") { _, _ ->
+                startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+                }, exportFolderRequestCode)
+            }
+            .show()
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == exportFolderRequestCode && resultCode == RESULT_OK) {
+            val treeUri = data?.data ?: return
+            contentResolver.takePersistableUriPermission(treeUri, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+            exportArchivesTo(treeUri)
+        }
+    }
+
+    private fun exportArchivesTo(treeUri: Uri) {
+        exportAllButton.isEnabled = false
+        exportProgress.visibility = ProgressBar.VISIBLE
+        exportProgress.isIndeterminate = false
+        Thread {
+            val archives = File(cacheDir, "media-archives").listFiles()
+                ?.filter { it.isFile && it.extension.equals("zip", true) }
+                ?.sortedBy { it.name }
+                ?: emptyList()
+            val destination = DocumentFile.fromTreeUri(this, treeUri)
+            var copied = 0
+            var failed = false
+            archives.forEachIndexed { index, archive ->
+                val target = destination?.createFile("application/zip", archive.name)
+                if (target == null) {
+                    failed = true
+                } else {
+                    runCatching {
+                        contentResolver.openOutputStream(target.uri)?.use { output ->
+                            archive.inputStream().use { input -> input.copyTo(output) }
+                        } ?: error("Unable to open destination")
+                        copied++
+                    }.onFailure {
+                        failed = true
+                        android.util.Log.e("MediaDiagnostic", "Export failed for ${archive.name}", it)
+                    }
+                }
+                runOnUiThread { exportProgress.progress = index + 1; exportProgress.max = archives.size }
+            }
+            val folderName = destination?.name ?: treeUri.lastPathSegment ?: "selected folder"
+            runOnUiThread {
+                exportAllButton.isEnabled = true
+                exportProgress.visibility = ProgressBar.GONE
+                if (!failed && copied == archives.size) {
+                    Toast.makeText(this, "All archives exported successfully to $folderName", Toast.LENGTH_LONG).show()
+                    statusText.text = "Export complete: $copied archives copied."
+                } else {
+                    Toast.makeText(this, "Export completed with errors", Toast.LENGTH_LONG).show()
+                    statusText.text = "Export completed: $copied/${archives.size} archives copied."
+                }
             }
         }.start()
     }
