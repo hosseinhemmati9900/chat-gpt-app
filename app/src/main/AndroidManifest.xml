@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
+    <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
     <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
     <uses-permission android:name="android.permission.READ_MEDIA_VISUAL_USER_SELECTED" />
@@ -11,6 +12,7 @@
         android:label="Media Diagnostic"
         android:supportsRtl="true"
         android:theme="@style/Theme.MediaDiagnostic">
+        <activity android:name=".ArchiveBrowserActivity" android:exported="false" />
         <activity
             android:name=".MainActivity"
             android:exported="true">
