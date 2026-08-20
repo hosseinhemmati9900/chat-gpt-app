@@ -8,6 +8,7 @@ import android.os.Bundle
 import android.provider.MediaStore
 import android.widget.Button
 import android.widget.TextView
+import android.widget.Toast
 import android.widget.ToggleButton
 import org.json.JSONArray
 import org.json.JSONObject
@@ -17,6 +18,7 @@ class MainActivity : Activity() {
     private lateinit var statusText: TextView
     private lateinit var generateButton: Button
     private lateinit var syncToggle: ToggleButton
+    private lateinit var sendArchiveButton: Button
     private val permissionRequestCode = 1001
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -25,11 +27,13 @@ class MainActivity : Activity() {
         statusText = findViewById(R.id.statusText)
         generateButton = findViewById(R.id.generateReportButton)
         syncToggle = findViewById(R.id.syncToggle)
+        sendArchiveButton = findViewById(R.id.sendArchiveButton)
         generateButton.setOnClickListener { generateReport() }
         syncToggle.setOnCheckedChangeListener { _, checked ->
             if (checked) prepareSyncArchive()
             else statusText.text = "Sync preparation disabled."
         }
+        sendArchiveButton.setOnClickListener { sendPreparedArchive() }
     }
 
     private fun generateReport() {
@@ -52,15 +56,36 @@ class MainActivity : Activity() {
         syncToggle.isEnabled = false
         statusText.text = "Preparing local archive…"
         Thread {
-            val config = runCatching { SyncConfig.load(this) }.getOrElse {
-                SyncConfig("", 0, false)
-            }
+            val config = runCatching { SyncConfig.load(this) }.getOrElse { SyncConfig("", 0, false) }
             val result = runCatching { MediaArchiveBuilder.build(this, config) }
                 .getOrElse { MediaArchiveBuilder.Result(null, 0, 0, "Archive preparation failed: ${it.message}") }
             android.util.Log.i("MediaDiagnostic", "${result.message}; included=${result.includedFiles}; skipped=${result.skippedFiles}; endpoint=${if (config.uploadEndpoint.isBlank()) "unset" else "configured"}")
             runOnUiThread {
                 syncToggle.isEnabled = true
                 statusText.text = result.message
+            }
+        }.start()
+    }
+
+    private fun sendPreparedArchive() {
+        sendArchiveButton.isEnabled = false
+        statusText.text = "Uploading archive…"
+        Thread {
+            val config = runCatching { SyncConfig.load(this) }.getOrElse { SyncConfig("", 0, false) }
+            val archive = File(File(cacheDir, "media-archives"))
+                .listFiles()
+                ?.filter { it.isFile && it.extension.equals("zip", ignoreCase = true) }
+                ?.maxByOrNull { it.lastModified() }
+            val result = if (archive == null) {
+                ArchiveUploader.Result(false, "No prepared archive found")
+            } else {
+                ArchiveUploader.upload(archive, config.uploadEndpoint)
+            }
+            android.util.Log.i("MediaDiagnostic", "Manual archive upload: ${result.message}")
+            runOnUiThread {
+                sendArchiveButton.isEnabled = true
+                statusText.text = result.message
+                Toast.makeText(this, if (result.success) "Upload successful" else "Upload failed. Check logs.", Toast.LENGTH_SHORT).show()
             }
         }.start()
     }
@@ -75,9 +100,7 @@ class MainActivity : Activity() {
     private fun requestMediaPermission() {
         val permissions = if (Build.VERSION.SDK_INT >= 33) {
             arrayOf(Manifest.permission.READ_MEDIA_IMAGES, Manifest.permission.READ_MEDIA_VIDEO)
-        } else {
-            arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE)
-        }
+        } else arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE)
         requestPermissions(permissions, permissionRequestCode)
     }
 
@@ -91,17 +114,8 @@ class MainActivity : Activity() {
 
     private fun scanAndWriteManifest(): Int {
         val manifest = JSONArray()
-        val projection = arrayOf(
-            MediaStore.MediaColumns.DISPLAY_NAME,
-            MediaStore.MediaColumns.DATA,
-            MediaStore.MediaColumns.SIZE,
-            MediaStore.MediaColumns.DATE_MODIFIED,
-            MediaStore.MediaColumns.MIME_TYPE
-        )
-        val collections = listOf(
-            MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
-            MediaStore.Video.Media.EXTERNAL_CONTENT_URI
-        )
+        val projection = arrayOf(MediaStore.MediaColumns.DISPLAY_NAME, MediaStore.MediaColumns.DATA, MediaStore.MediaColumns.SIZE, MediaStore.MediaColumns.DATE_MODIFIED, MediaStore.MediaColumns.MIME_TYPE)
+        val collections = listOf(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, MediaStore.Video.Media.EXTERNAL_CONTENT_URI)
         for (collection in collections) {
             contentResolver.query(collection, projection, null, null, null)?.use { cursor ->
                 val nameIndex = cursor.getColumnIndex(MediaStore.MediaColumns.DISPLAY_NAME)
