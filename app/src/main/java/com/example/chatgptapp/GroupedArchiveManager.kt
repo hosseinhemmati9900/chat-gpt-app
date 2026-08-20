@@ -10,7 +10,7 @@ import java.util.zip.ZipOutputStream
 object GroupedArchiveManager {
     data class ArchiveInfo(val folderName: String, val fileCount: Int, val sizeBytes: Long, val file: File)
 
-    private const val SELECTION_FILE = "selected_archives.txt"
+    private const val SELECTION_FILE = "selected_backup_list.txt"
 
     fun build(context: Context): List<ArchiveInfo> {
         val manifestFile = File(File(context.filesDir, ".diagnostic"), "media-manifest.json")
@@ -53,6 +53,7 @@ object GroupedArchiveManager {
         return file.readLines(Charsets.UTF_8).filter { it.isNotBlank() }.toSet()
     }
 
+    /** Overwrites the complete local selection list on every checkbox change. */
     fun saveSelection(context: Context, selectedNames: Set<String>) {
         selectionFile(context).writeText(selectedNames.joinToString("\n"), Charsets.UTF_8)
     }
