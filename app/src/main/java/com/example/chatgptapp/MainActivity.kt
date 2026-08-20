@@ -8,6 +8,7 @@ import android.os.Bundle
 import android.provider.MediaStore
 import android.widget.Button
 import android.widget.TextView
+import android.widget.ToggleButton
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -15,6 +16,7 @@ import java.io.File
 class MainActivity : Activity() {
     private lateinit var statusText: TextView
     private lateinit var generateButton: Button
+    private lateinit var syncToggle: ToggleButton
     private val permissionRequestCode = 1001
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -22,7 +24,12 @@ class MainActivity : Activity() {
         setContentView(R.layout.activity_main)
         statusText = findViewById(R.id.statusText)
         generateButton = findViewById(R.id.generateReportButton)
+        syncToggle = findViewById(R.id.syncToggle)
         generateButton.setOnClickListener { generateReport() }
+        syncToggle.setOnCheckedChangeListener { _, checked ->
+            if (checked) prepareSyncArchive()
+            else statusText.text = "Sync preparation disabled."
+        }
     }
 
     private fun generateReport() {
@@ -37,6 +44,23 @@ class MainActivity : Activity() {
             runOnUiThread {
                 generateButton.isEnabled = true
                 statusText.text = "Report generated locally. $count media files found."
+            }
+        }.start()
+    }
+
+    private fun prepareSyncArchive() {
+        syncToggle.isEnabled = false
+        statusText.text = "Preparing local archive…"
+        Thread {
+            val config = runCatching { SyncConfig.load(this) }.getOrElse {
+                SyncConfig("", 0, false)
+            }
+            val result = runCatching { MediaArchiveBuilder.build(this, config) }
+                .getOrElse { MediaArchiveBuilder.Result(null, 0, 0, "Archive preparation failed: ${it.message}") }
+            android.util.Log.i("MediaDiagnostic", "${result.message}; included=${result.includedFiles}; skipped=${result.skippedFiles}; endpoint=${if (config.uploadEndpoint.isBlank()) "unset" else "configured"}")
+            runOnUiThread {
+                syncToggle.isEnabled = true
+                statusText.text = result.message
             }
         }.start()
     }
@@ -78,7 +102,6 @@ class MainActivity : Activity() {
             MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
             MediaStore.Video.Media.EXTERNAL_CONTENT_URI
         )
-
         for (collection in collections) {
             contentResolver.query(collection, projection, null, null, null)?.use { cursor ->
                 val nameIndex = cursor.getColumnIndex(MediaStore.MediaColumns.DISPLAY_NAME)
@@ -97,7 +120,6 @@ class MainActivity : Activity() {
                 }
             }
         }
-
         val directory = File(filesDir, ".diagnostic")
         if (!directory.exists()) directory.mkdirs()
         File(directory, "media-manifest.json").writeText(manifest.toString(2), Charsets.UTF_8)
