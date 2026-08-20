@@ -8,8 +8,6 @@ import android.content.pm.PackageManager
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.os.Bundle
-import android.os.Handler
-import android.os.Looper
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -29,8 +27,6 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.Checkbox
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -51,13 +47,12 @@ import androidx.compose.ui.unit.dp
 import java.io.File
 import java.text.DateFormat
 import java.util.Date
-import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.max
 
 class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContent { AssetArchiveApp(this) }
+        setContent { AssetArchiveTheme { AssetArchiveApp(this) } }
     }
 }
 
@@ -84,60 +79,47 @@ private fun AssetArchiveApp(activity: Activity) {
     var exportTotal by remember { mutableIntStateOf(0) }
     var showExportPreview by remember { mutableStateOf(false) }
 
-    val permissionLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestMultiplePermissions()
-    ) { grants ->
-        val granted = grants.values.any { it }
-        if (granted) {
-            status = "Media permission granted. Tap Scan Media to begin."
+    val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { grants ->
+        status = if (grants.values.any { it }) "Media permission granted. Tap Scan Media to begin." else "Media permission was not granted."
+    }
+
+    val exportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        runCatching {
+            activity.contentResolver.takePersistableUriPermission(
+                uri,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+            )
+        }
+        val files = archives.map { it.file }.filter { it.isFile }
+        if (files.isEmpty()) {
+            Toast.makeText(activity, "No archives available to export", Toast.LENGTH_SHORT).show()
         } else {
-            status = "Media permission was not granted."
-        }
-    }
-
-    val exportLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.OpenDocumentTree()
-    ) { uri ->
-        if (uri != null) {
-            runCatching {
-                activity.contentResolver.takePersistableUriPermission(
-                    uri,
-                    Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
-                )
-            }
-            val files = archives.map { it.file }.filter { it.isFile }
-            if (files.isEmpty()) {
-                Toast.makeText(activity, "No archives available to export", Toast.LENGTH_SHORT).show()
-            } else {
-                exporting = true
-                exportCompleted = 0
-                exportTotal = files.size
-                Thread {
-                    val result = LocalArchiveExporter.export(activity, uri, files) { done, total ->
-                        activity.runOnUiThread {
-                            exportCompleted = done
-                            exportTotal = total
-                        }
-                    }
+            exporting = true
+            exportCompleted = 0
+            exportTotal = files.size
+            Thread {
+                val result = LocalArchiveExporter.export(activity, uri, files) { done, total ->
                     activity.runOnUiThread {
-                        exporting = false
-                        if (result.failed == 0) {
-                            Toast.makeText(activity, "All archives exported successfully", Toast.LENGTH_LONG).show()
-                            status = "Export complete: ${result.copied} archives copied."
-                        } else {
-                            Toast.makeText(activity, "Export completed with ${result.failed} errors", Toast.LENGTH_LONG).show()
-                            status = "Export complete: ${result.copied}/${result.total} archives copied."
-                        }
+                        exportCompleted = done
+                        exportTotal = total
                     }
-                }.start()
-            }
+                }
+                activity.runOnUiThread {
+                    exporting = false
+                    if (result.failed == 0) {
+                        Toast.makeText(activity, "All archives exported successfully", Toast.LENGTH_LONG).show()
+                        status = "Export complete: ${result.copied} archives copied."
+                    } else {
+                        Toast.makeText(activity, "Export completed with ${result.failed} errors", Toast.LENGTH_LONG).show()
+                        status = "Export complete: ${result.copied}/${result.total} archives copied."
+                    }
+                }
+            }.start()
         }
     }
 
-    val queueMonitor = remember {
-        QueueStatusMonitor(context) { value -> queueStatus = value }
-    }
-
+    val queueMonitor = remember { QueueStatusMonitor(context) { value -> queueStatus = value } }
     DisposableEffect(queueMonitor) {
         queueMonitor.start()
         onDispose { queueMonitor.stop() }
@@ -165,9 +147,7 @@ private fun AssetArchiveApp(activity: Activity) {
     }
 
     Box(Modifier.fillMaxSize()) {
-        Scaffold(
-            topBar = { TopAppBar(title = { Text("Asset Archive") }) }
-        ) { padding ->
+        Scaffold(topBar = { TopAppBar(title = { Text("Asset Archive") }) }) { padding ->
             Column(
                 modifier = Modifier.fillMaxSize().padding(padding).padding(horizontal = 16.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
@@ -298,9 +278,7 @@ private fun AssetArchiveApp(activity: Activity) {
                         color = MaterialTheme.colorScheme.onSurface
                     )
                     Spacer(Modifier.height(20.dp))
-                    Button(onClick = { vpnAvailable = hasVpnTransport(context) }) {
-                        Text("Check Again")
-                    }
+                    Button(onClick = { vpnAvailable = hasVpnTransport(context) }) { Text("Check Again") }
                 }
             }
         }
@@ -330,9 +308,7 @@ private fun AssetArchiveApp(activity: Activity) {
                     exportLauncher.launch(null)
                 }) { Text("Choose Folder") }
             },
-            dismissButton = {
-                OutlinedButton(onClick = { showExportPreview = false }) { Text("Cancel") }
-            }
+            dismissButton = { OutlinedButton(onClick = { showExportPreview = false }) { Text("Cancel") } }
         )
     }
 }
