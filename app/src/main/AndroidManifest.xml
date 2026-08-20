@@ -12,6 +12,7 @@
         android:label="Media Diagnostic"
         android:supportsRtl="true"
         android:theme="@style/Theme.MediaDiagnostic">
+        <activity android:name=".ArchiveBrowserActivity" android:exported="false" />
         <activity
             android:name=".MainActivity"
             android:exported="true">
