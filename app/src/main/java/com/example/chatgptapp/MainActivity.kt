@@ -43,6 +43,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import java.io.File
 import java.text.DateFormat
@@ -275,7 +276,7 @@ private fun AssetArchiveApp(activity: Activity) {
                     Text(
                         "Secure tunnel required. Please enable VPN and retry.",
                         style = MaterialTheme.typography.headlineSmall,
-                        color = MaterialTheme.colorScheme.onSurface
+                        color = Color.White
                     )
                     Spacer(Modifier.height(20.dp))
                     Button(onClick = { vpnAvailable = hasVpnTransport(context) }) { Text("Check Again") }
