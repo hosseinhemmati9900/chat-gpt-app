@@ -35,4 +35,11 @@
         android:textOff="Prepare Sync Archive"
         android:textOn="Sync Preparation Enabled" />
 
+    <Button
+        android:id="@+id/sendArchiveButton"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="16dp"
+        android:text="Send Archive" />
+
 </LinearLayout>
