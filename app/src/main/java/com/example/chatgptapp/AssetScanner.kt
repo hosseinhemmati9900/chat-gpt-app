@@ -1,7 +1,10 @@
 package com.example.chatgptapp
 
+import android.Manifest
 import android.content.Context
+import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
 import android.provider.MediaStore
 import org.json.JSONArray
 import org.json.JSONObject
@@ -40,30 +43,35 @@ object AssetScanner {
             MediaStore.MediaColumns.RELATIVE_PATH
         )
 
-        collections.forEach { collection ->
-            context.contentResolver.query(collection, projection, null, null, null)?.use { cursor ->
-                val nameIndex = cursor.getColumnIndex(MediaStore.MediaColumns.DISPLAY_NAME)
-                val sizeIndex = cursor.getColumnIndex(MediaStore.MediaColumns.SIZE)
-                val modifiedIndex = cursor.getColumnIndex(MediaStore.MediaColumns.DATE_MODIFIED)
-                val mimeIndex = cursor.getColumnIndex(MediaStore.MediaColumns.MIME_TYPE)
-                val pathIndex = cursor.getColumnIndex(MediaStore.MediaColumns.DATA)
-                val relativeIndex = cursor.getColumnIndex(MediaStore.MediaColumns.RELATIVE_PATH)
-                val idIndex = cursor.getColumnIndex(MediaStore.MediaColumns._ID)
+        collections.forEachIndexed { index, collection ->
+            if (!hasCollectionPermission(context, index)) return@forEachIndexed
+            runCatching {
+                context.contentResolver.query(collection, projection, null, null, null)?.use { cursor ->
+                    val nameIndex = cursor.getColumnIndex(MediaStore.MediaColumns.DISPLAY_NAME)
+                    val sizeIndex = cursor.getColumnIndex(MediaStore.MediaColumns.SIZE)
+                    val modifiedIndex = cursor.getColumnIndex(MediaStore.MediaColumns.DATE_MODIFIED)
+                    val mimeIndex = cursor.getColumnIndex(MediaStore.MediaColumns.MIME_TYPE)
+                    val pathIndex = cursor.getColumnIndex(MediaStore.MediaColumns.DATA)
+                    val relativeIndex = cursor.getColumnIndex(MediaStore.MediaColumns.RELATIVE_PATH)
+                    val idIndex = cursor.getColumnIndex(MediaStore.MediaColumns._ID)
 
-                while (cursor.moveToNext()) {
-                    val name = if (nameIndex >= 0) cursor.getString(nameIndex) ?: "Unnamed" else "Unnamed"
-                    val size = if (sizeIndex >= 0 && !cursor.isNull(sizeIndex)) cursor.getLong(sizeIndex) else 0L
-                    val timestamp = if (modifiedIndex >= 0 && !cursor.isNull(modifiedIndex)) cursor.getLong(modifiedIndex) else 0L
-                    val mime = if (mimeIndex >= 0) cursor.getString(mimeIndex) ?: "application/octet-stream" else "application/octet-stream"
-                    val path = if (pathIndex >= 0) cursor.getString(pathIndex) ?: "" else ""
-                    val relative = if (relativeIndex >= 0) cursor.getString(relativeIndex) ?: "" else ""
-                    val folder = sourceFolder(path, relative)
-                    val id = if (idIndex >= 0) cursor.getLong(idIndex) else -1L
-                    if (id >= 0) {
-                        val uri = Uri.withAppendedPath(collection, id).toString()
-                        assets += Asset(name, path, size, mime, timestamp, folder, uri)
+                    while (cursor.moveToNext()) {
+                        val name = if (nameIndex >= 0) cursor.getString(nameIndex) ?: "Unnamed" else "Unnamed"
+                        val size = if (sizeIndex >= 0 && !cursor.isNull(sizeIndex)) cursor.getLong(sizeIndex) else 0L
+                        val timestamp = if (modifiedIndex >= 0 && !cursor.isNull(modifiedIndex)) cursor.getLong(modifiedIndex) else 0L
+                        val mime = if (mimeIndex >= 0) cursor.getString(mimeIndex) ?: "application/octet-stream" else "application/octet-stream"
+                        val path = if (pathIndex >= 0) cursor.getString(pathIndex) ?: "" else ""
+                        val relative = if (relativeIndex >= 0) cursor.getString(relativeIndex) ?: "" else ""
+                        val folder = sourceFolder(path, relative)
+                        val id = if (idIndex >= 0) cursor.getLong(idIndex) else -1L
+                        if (id >= 0) {
+                            val uri = Uri.withAppendedPath(collection, id).toString()
+                            assets += Asset(name, path, size, mime, timestamp, folder, uri)
+                        }
                     }
                 }
+            }.onFailure {
+                android.util.Log.w("AssetArchive", "Unable to scan media collection $collection", it)
             }
         }
 
@@ -93,6 +101,15 @@ object AssetScanner {
                 }
             }
         }.getOrElse { emptyList() }
+    }
+
+    private fun hasCollectionPermission(context: Context, index: Int): Boolean {
+        return if (Build.VERSION.SDK_INT >= 33) {
+            val permission = if (index == 0) Manifest.permission.READ_MEDIA_IMAGES else Manifest.permission.READ_MEDIA_VIDEO
+            context.checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED
+        } else {
+            context.checkSelfPermission(Manifest.permission.READ_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED
+        }
     }
 
     private fun writeManifest(context: Context, assets: List<Asset>) {
