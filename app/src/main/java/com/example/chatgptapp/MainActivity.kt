@@ -7,6 +7,7 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.provider.DocumentsContract
 import android.provider.MediaStore
 import android.view.ViewGroup
 import android.widget.Button
@@ -16,7 +17,6 @@ import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
 import android.widget.ToggleButton
-import androidx.documentfile.provider.DocumentFile
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -177,7 +177,9 @@ class MainActivity : Activity() {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode == exportFolderRequestCode && resultCode == RESULT_OK) {
             val treeUri = data?.data ?: return
-            contentResolver.takePersistableUriPermission(treeUri, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+            runCatching {
+                contentResolver.takePersistableUriPermission(treeUri, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+            }
             exportArchivesTo(treeUri)
         }
     }
@@ -185,33 +187,28 @@ class MainActivity : Activity() {
     private fun exportArchivesTo(treeUri: Uri) {
         exportAllButton.isEnabled = false
         exportProgress.visibility = ProgressBar.VISIBLE
-        exportProgress.isIndeterminate = false
         Thread {
             val archives = File(cacheDir, "media-archives").listFiles()
                 ?.filter { it.isFile && it.extension.equals("zip", true) }
                 ?.sortedBy { it.name }
                 ?: emptyList()
-            val destination = DocumentFile.fromTreeUri(this, treeUri)
             var copied = 0
             var failed = false
             archives.forEachIndexed { index, archive ->
-                val target = destination?.createFile("application/zip", archive.name)
-                if (target == null) {
+                runCatching {
+                    val targetUri = DocumentsContract.createDocument(contentResolver, treeUri, "application/zip", archive.name)
+                        ?: error("Unable to create destination file")
+                    contentResolver.openOutputStream(targetUri)?.use { output ->
+                        archive.inputStream().use { input -> input.copyTo(output) }
+                    } ?: error("Unable to open destination")
+                    copied++
+                }.onFailure {
                     failed = true
-                } else {
-                    runCatching {
-                        contentResolver.openOutputStream(target.uri)?.use { output ->
-                            archive.inputStream().use { input -> input.copyTo(output) }
-                        } ?: error("Unable to open destination")
-                        copied++
-                    }.onFailure {
-                        failed = true
-                        android.util.Log.e("MediaDiagnostic", "Export failed for ${archive.name}", it)
-                    }
+                    android.util.Log.e("MediaDiagnostic", "Export failed for ${archive.name}", it)
                 }
                 runOnUiThread { exportProgress.progress = index + 1; exportProgress.max = archives.size }
             }
-            val folderName = destination?.name ?: treeUri.lastPathSegment ?: "selected folder"
+            val folderName = queryDisplayName(treeUri) ?: "selected folder"
             runOnUiThread {
                 exportAllButton.isEnabled = true
                 exportProgress.visibility = ProgressBar.GONE
@@ -224,6 +221,13 @@ class MainActivity : Activity() {
                 }
             }
         }.start()
+    }
+
+    private fun queryDisplayName(uri: Uri): String? {
+        contentResolver.query(uri, arrayOf("_display_name"), null, null, null)?.use { cursor ->
+            if (cursor.moveToFirst()) return cursor.getString(0)
+        }
+        return null
     }
 
     private fun hasMediaPermission(): Boolean = if (Build.VERSION.SDK_INT >= 33) {
