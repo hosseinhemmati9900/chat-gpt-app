@@ -1,60 +1,86 @@
 package com.example.chatgptapp
 
 import android.content.Context
-import org.json.JSONArray
+import android.net.Uri
 import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 
-/** Local-only grouping and archive generation by parent source folder. */
+/** Local-only archive builder and selection persistence. */
 object GroupedArchiveManager {
-    data class ArchiveInfo(val folderName: String, val fileCount: Int, val sizeBytes: Long, val file: File)
+    data class ArchiveInfo(
+        val folderName: String,
+        val fileCount: Int,
+        val sizeBytes: Long,
+        val file: File
+    )
 
-    private const val SELECTION_FILE = "selected_backup_list.txt"
+    private const val CACHE_DIR = "asset-archives"
+    private const val SELECTION_FILE = "selected_reports.txt"
+
+    fun archiveDirectory(context: Context): File = File(context.cacheDir, CACHE_DIR)
 
     fun build(context: Context): List<ArchiveInfo> {
-        val manifestFile = File(File(context.filesDir, ".diagnostic"), "media-manifest.json")
-        if (!manifestFile.exists()) return emptyList()
-        val manifest = JSONArray(manifestFile.readText(Charsets.UTF_8))
-        val groups = linkedMapOf<String, MutableList<File>>()
-        for (i in 0 until manifest.length()) {
-            val item = manifest.optJSONObject(i) ?: continue
-            val path = item.optString("path", "")
-            val source = File(path)
-            if (!source.isFile || !source.canRead()) continue
-            val folder = source.parentFile?.name?.takeIf { it.isNotBlank() } ?: "Unknown"
-            groups.getOrPut(folder) { mutableListOf() }.add(source)
-        }
+        val assets = AssetScanner.readManifest(context)
+        if (assets.isEmpty()) return emptyList()
+        val directory = archiveDirectory(context)
+        if (!directory.exists() && !directory.mkdirs()) error("Unable to create archive cache directory")
 
-        val cacheDir = File(context.cacheDir, "media-archives")
-        if (!cacheDir.exists()) cacheDir.mkdirs()
-        val timestamp = System.currentTimeMillis()
-        val result = mutableListOf<ArchiveInfo>()
-        groups.forEach { (folder, files) ->
+        val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
+        return assets.groupBy { it.folder.ifBlank { "Unknown" } }.mapNotNull { (folder, group) ->
             val safeFolder = folder.replace(Regex("[^A-Za-z0-9._-]"), "_").ifBlank { "Unknown" }
-            val archive = File(cacheDir, "${safeFolder}_$timestamp.zip")
-            ZipOutputStream(archive.outputStream().buffered()).use { zip ->
-                files.forEachIndexed { index, source ->
-                    zip.putNextEntry(ZipEntry("media/$index-${source.name.substringAfterLast('/')}"))
-                    source.inputStream().use { it.copyTo(zip) }
-                    zip.closeEntry()
+            val archive = File(directory, "${safeFolder}_$timestamp.zip")
+            runCatching {
+                ZipOutputStream(archive.outputStream().buffered()).use { zip ->
+                    group.forEachIndexed { index, asset ->
+                        val entryName = uniqueEntryName(asset.name, index)
+                        zip.putNextEntry(ZipEntry(entryName))
+                        openAsset(context, asset).use { input -> input.copyTo(zip) }
+                        zip.closeEntry()
+                    }
                 }
-            }
-            result += ArchiveInfo(folder, files.size, archive.length(), archive)
+                ArchiveInfo(folder, group.size, archive.length(), archive)
+            }.onFailure {
+                archive.delete()
+                android.util.Log.e("AssetArchive", "Failed to archive folder $folder", it)
+            }.getOrNull()
         }
-        return result
     }
+
+    fun listArchives(context: Context): List<ArchiveInfo> = archiveDirectory(context).listFiles()
+        ?.filter { it.isFile && it.extension.equals("zip", ignoreCase = true) }
+        ?.sortedByDescending { it.lastModified() }
+        ?.map { file ->
+            val folder = file.name.substringBeforeLast('_').replace('_', ' ')
+            ArchiveInfo(folder, -1, file.length(), file)
+        }
+        ?: emptyList()
 
     fun selectionFile(context: Context): File = File(context.filesDir, SELECTION_FILE)
 
-    fun loadSelection(context: Context): Set<String> {
+    fun loadSelection(context: Context): Set<String> = runCatching {
         val file = selectionFile(context)
-        if (!file.exists()) return emptySet()
-        return file.readLines(Charsets.UTF_8).filter { it.isNotBlank() }.toSet()
+        if (!file.exists()) emptySet() else file.readLines(Charsets.UTF_8).map { it.trim() }.filter { it.isNotEmpty() }.toSet()
+    }.getOrElse { emptySet() }
+
+    fun saveSelection(context: Context, selectedNames: Set<String>) {
+        val file = selectionFile(context)
+        val ordered = selectedNames.filter { it.isNotBlank() }.sorted()
+        file.writeText(if (ordered.isEmpty()) "" else ordered.joinToString("\n") + "\n", Charsets.UTF_8)
     }
 
-    /** Overwrites the complete local selection list on every checkbox change. */
-    fun saveSelection(context: Context, selectedNames: Set<String>) {
-        selectionFile(context).writeText(selectedNames.joinToString("\n"), Charsets.UTF_8)
+    private fun openAsset(context: Context, asset: AssetScanner.Asset) = when {
+        asset.uri.isNotBlank() -> context.contentResolver.openInputStream(Uri.parse(asset.uri))
+            ?: error("Unable to open media URI: ${asset.uri}")
+        asset.path.isNotBlank() -> File(asset.path).inputStream()
+        else -> error("Asset has no readable source: ${asset.name}")
+    }
+
+    private fun uniqueEntryName(name: String, index: Int): String {
+        val clean = name.substringAfterLast('/').substringAfterLast('\\').ifBlank { "asset-$index" }
+        return "media/${index.toString().padStart(5, '0')}-$clean"
     }
 }
