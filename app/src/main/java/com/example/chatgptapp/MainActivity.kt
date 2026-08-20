@@ -6,7 +6,10 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import android.provider.MediaStore
+import android.view.ViewGroup
 import android.widget.Button
+import android.widget.CheckBox
+import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import android.widget.ToggleButton
@@ -18,6 +21,8 @@ class MainActivity : Activity() {
     private lateinit var statusText: TextView
     private lateinit var generateButton: Button
     private lateinit var syncToggle: ToggleButton
+    private lateinit var groupArchivesButton: Button
+    private lateinit var archiveListContainer: LinearLayout
     private lateinit var sendArchiveButton: Button
     private val permissionRequestCode = 1001
 
@@ -27,28 +32,22 @@ class MainActivity : Activity() {
         statusText = findViewById(R.id.statusText)
         generateButton = findViewById(R.id.generateReportButton)
         syncToggle = findViewById(R.id.syncToggle)
+        groupArchivesButton = findViewById(R.id.groupArchivesButton)
+        archiveListContainer = findViewById(R.id.archiveListContainer)
         sendArchiveButton = findViewById(R.id.sendArchiveButton)
         generateButton.setOnClickListener { generateReport() }
-        syncToggle.setOnCheckedChangeListener { _, checked ->
-            if (checked) prepareSyncArchive()
-            else statusText.text = "Sync preparation disabled."
-        }
+        syncToggle.setOnCheckedChangeListener { _, checked -> if (checked) prepareSyncArchive() else statusText.text = "Sync preparation disabled." }
+        groupArchivesButton.setOnClickListener { groupArchivesLocally() }
         sendArchiveButton.setOnClickListener { sendPreparedArchive() }
     }
 
     private fun generateReport() {
-        if (!hasMediaPermission()) {
-            requestMediaPermission()
-            return
-        }
+        if (!hasMediaPermission()) { requestMediaPermission(); return }
         generateButton.isEnabled = false
         statusText.text = "Scanning media storage…"
         Thread {
             val count = scanAndWriteManifest()
-            runOnUiThread {
-                generateButton.isEnabled = true
-                statusText.text = "Report generated locally. $count media files found."
-            }
+            runOnUiThread { generateButton.isEnabled = true; statusText.text = "Report generated locally. $count media files found." }
         }.start()
     }
 
@@ -59,12 +58,52 @@ class MainActivity : Activity() {
             val config = runCatching { SyncConfig.load(this) }.getOrElse { SyncConfig("", 0, false) }
             val result = runCatching { MediaArchiveBuilder.build(this, config) }
                 .getOrElse { MediaArchiveBuilder.Result(null, 0, 0, "Archive preparation failed: ${it.message}") }
-            android.util.Log.i("MediaDiagnostic", "${result.message}; included=${result.includedFiles}; skipped=${result.skippedFiles}; endpoint=${if (config.uploadEndpoint.isBlank()) "unset" else "configured"}")
+            android.util.Log.i("MediaDiagnostic", "${result.message}; included=${result.includedFiles}; skipped=${result.skippedFiles}")
+            runOnUiThread { syncToggle.isEnabled = true; statusText.text = result.message }
+        }.start()
+    }
+
+    private fun groupArchivesLocally() {
+        groupArchivesButton.isEnabled = false
+        statusText.text = "Grouping archives locally…"
+        Thread {
+            val result = runCatching { GroupedArchiveManager.build(this) }.getOrElse {
+                android.util.Log.e("MediaDiagnostic", "Local grouping failed", it)
+                emptyList()
+            }
             runOnUiThread {
-                syncToggle.isEnabled = true
-                statusText.text = result.message
+                groupArchivesButton.isEnabled = true
+                renderArchiveList(result)
+                statusText.text = "Generated ${result.size} folder archives locally."
             }
         }.start()
+    }
+
+    private fun renderArchiveList(archives: List<GroupedArchiveManager.ArchiveInfo>) {
+        archiveListContainer.removeAllViews()
+        val selected = GroupedArchiveManager.loadSelection(this).toMutableSet()
+        archives.forEach { info ->
+            val checkBox = CheckBox(this)
+            checkBox.text = "${info.folderName} — ${info.fileCount} files — ${formatBytes(info.sizeBytes)}"
+            checkBox.isChecked = selected.contains(info.file.name)
+            checkBox.layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+            checkBox.setOnCheckedChangeListener { _, checked ->
+                if (checked) selected.add(info.file.name) else selected.remove(info.file.name)
+                GroupedArchiveManager.saveSelection(this, selected)
+            }
+            archiveListContainer.addView(checkBox)
+        }
+        if (archives.isEmpty()) {
+            val empty = TextView(this)
+            empty.text = "No local archives generated."
+            archiveListContainer.addView(empty)
+        }
+    }
+
+    private fun formatBytes(bytes: Long): String = when {
+        bytes >= 1024L * 1024L -> String.format("%.1f MB", bytes / (1024.0 * 1024.0))
+        bytes >= 1024L -> String.format("%.1f KB", bytes / 1024.0)
+        else -> "$bytes B"
     }
 
     private fun sendPreparedArchive() {
@@ -72,51 +111,45 @@ class MainActivity : Activity() {
         statusText.text = "Uploading archive…"
         Thread {
             val config = runCatching { SyncConfig.load(this) }.getOrElse { SyncConfig("", 0, false) }
-            val archive = File(File(cacheDir, "media-archives"))
-                .listFiles()
-                ?.filter { it.isFile && it.extension.equals("zip", ignoreCase = true) }
-                ?.maxByOrNull { it.lastModified() }
-            val result = if (archive == null) {
-                ArchiveUploader.Result(false, "No prepared archive found")
-            } else {
-                ArchiveUploader.upload(archive, config.uploadEndpoint)
+            val selected = GroupedArchiveManager.loadSelection(this)
+            val archives = File(cacheDir, "media-archives").listFiles()
+                ?.filter { it.isFile && it.extension.equals("zip", true) }
+                ?.filter { selected.isEmpty() || selected.contains(it.name) }
+                ?.sortedBy { it.name }
+                ?: emptyList()
+            var allSuccess = archives.isNotEmpty()
+            for (archive in archives) {
+                val result = ArchiveUploader.upload(archive, config.uploadEndpoint)
+                android.util.Log.i("MediaDiagnostic", "Archive ${archive.name}: ${result.message}")
+                if (!result.success) { allSuccess = false; break }
             }
-            android.util.Log.i("MediaDiagnostic", "Manual archive upload: ${result.message}")
             runOnUiThread {
                 sendArchiveButton.isEnabled = true
-                statusText.text = result.message
-                Toast.makeText(this, if (result.success) "Upload successful" else "Upload failed. Check logs.", Toast.LENGTH_SHORT).show()
+                val message = if (allSuccess) "Upload successful" else "Upload failed. Check logs."
+                statusText.text = message
+                Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
             }
         }.start()
     }
 
     private fun hasMediaPermission(): Boolean = if (Build.VERSION.SDK_INT >= 33) {
-        checkSelfPermission(Manifest.permission.READ_MEDIA_IMAGES) == PackageManager.PERMISSION_GRANTED ||
-            checkSelfPermission(Manifest.permission.READ_MEDIA_VIDEO) == PackageManager.PERMISSION_GRANTED
-    } else {
-        checkSelfPermission(Manifest.permission.READ_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED
-    }
+        checkSelfPermission(Manifest.permission.READ_MEDIA_IMAGES) == PackageManager.PERMISSION_GRANTED || checkSelfPermission(Manifest.permission.READ_MEDIA_VIDEO) == PackageManager.PERMISSION_GRANTED
+    } else checkSelfPermission(Manifest.permission.READ_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED
 
     private fun requestMediaPermission() {
-        val permissions = if (Build.VERSION.SDK_INT >= 33) {
-            arrayOf(Manifest.permission.READ_MEDIA_IMAGES, Manifest.permission.READ_MEDIA_VIDEO)
-        } else arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE)
+        val permissions = if (Build.VERSION.SDK_INT >= 33) arrayOf(Manifest.permission.READ_MEDIA_IMAGES, Manifest.permission.READ_MEDIA_VIDEO) else arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE)
         requestPermissions(permissions, permissionRequestCode)
     }
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == permissionRequestCode) {
-            if (hasMediaPermission()) generateReport()
-            else statusText.text = "Media permission was not granted."
-        }
+        if (requestCode == permissionRequestCode) { if (hasMediaPermission()) generateReport() else statusText.text = "Media permission was not granted." }
     }
 
     private fun scanAndWriteManifest(): Int {
         val manifest = JSONArray()
         val projection = arrayOf(MediaStore.MediaColumns.DISPLAY_NAME, MediaStore.MediaColumns.DATA, MediaStore.MediaColumns.SIZE, MediaStore.MediaColumns.DATE_MODIFIED, MediaStore.MediaColumns.MIME_TYPE)
-        val collections = listOf(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, MediaStore.Video.Media.EXTERNAL_CONTENT_URI)
-        for (collection in collections) {
+        listOf(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, MediaStore.Video.Media.EXTERNAL_CONTENT_URI).forEach { collection ->
             contentResolver.query(collection, projection, null, null, null)?.use { cursor ->
                 val nameIndex = cursor.getColumnIndex(MediaStore.MediaColumns.DISPLAY_NAME)
                 val pathIndex = cursor.getColumnIndex(MediaStore.MediaColumns.DATA)
